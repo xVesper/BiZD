@@ -1,0 +1,279 @@
+-- 1. Funkcja 1: Zwracająca nazwę pracy dla podanego parametru ID
+CREATE OR REPLACE FUNCTION get_job_title(p_job_id IN VARCHAR2) RETURN VARCHAR2 AS
+  v_job_title VARCHAR2(255);
+BEGIN
+  BEGIN
+    SELECT job_title INTO v_job_title
+    FROM jobs
+    WHERE job_id = p_job_id;
+
+    RETURN v_job_title;
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      RAISE_APPLICATION_ERROR(-20001, 'Nie znaleziono pracy o podanym ID');
+  END;
+END get_job_title;
+/
+
+-- 2. Funkcja 2: Zwracająca roczne zarobki (wynagrodzenie * 12 + premia)
+CREATE OR REPLACE FUNCTION get_annual_salary(p_employee_id IN NUMBER) RETURN NUMBER AS
+  v_annual_salary NUMBER;
+BEGIN
+  SELECT (salary * 12) + (NVL(commission_pct, 0) * salary * 12) INTO v_annual_salary
+  FROM employees
+  WHERE employee_id = p_employee_id;
+
+  RETURN v_annual_salary;
+EXCEPTION
+  WHEN NO_DATA_FOUND THEN
+    RAISE_APPLICATION_ERROR(-20002, 'Nie znaleziono pracownika o podanym ID');
+END get_annual_salary;
+/
+
+-- 3. Funkcja 3: Wyciąganie numeru kierunkowego z numeru telefonu
+CREATE OR REPLACE FUNCTION extract_area_code(p_phone_number IN VARCHAR2) RETURN VARCHAR2 AS
+  v_area_code VARCHAR2(10);
+BEGIN
+  BEGIN
+    SELECT REGEXP_SUBSTR(p_phone_number, '\([0-9]+\)', 1, 1) INTO v_area_code
+    FROM dual;
+
+    -- Usuwamy nawiasy
+    v_area_code := REPLACE(v_area_code, '(', '');
+    v_area_code := REPLACE(v_area_code, ')', '');
+
+    RETURN v_area_code;
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      RETURN NULL; -- Jeśli nie znaleziono kodu kierunkowego
+  END;
+END extract_area_code;
+/
+
+-- 4. Funkcja 4: Zmienianie pierwszej i ostatniej litery na wielką, reszta na małą
+CREATE OR REPLACE FUNCTION capitalize_first_and_last(p_string IN VARCHAR2) RETURN VARCHAR2 AS
+  v_result VARCHAR2(255);
+BEGIN
+  IF LENGTH(p_string) > 1 THEN
+    v_result := UPPER(SUBSTR(p_string, 1, 1)) || LOWER(SUBSTR(p_string, 2, LENGTH(p_string)-2)) || UPPER(SUBSTR(p_string, LENGTH(p_string), 1));
+  ELSE
+    v_result := UPPER(p_string); -- Jeśli tylko 1 znak
+  END IF;
+
+  RETURN v_result;
+END capitalize_first_and_last;
+/
+
+-- 5. Funkcja 5: Konwersja PESEL na datę urodzenia
+CREATE OR REPLACE FUNCTION pesel_to_birthdate(p_pesel IN VARCHAR2) RETURN DATE AS
+  v_birth_date DATE;
+BEGIN
+  -- Zakłada, że PESEL ma format 'YYMMDD'
+  v_birth_date := TO_DATE(SUBSTR(p_pesel, 1, 6), 'YYMMDD');
+  RETURN v_birth_date;
+EXCEPTION
+  WHEN OTHERS THEN
+    RAISE_APPLICATION_ERROR(-20003, 'Niepoprawny PESEL');
+END pesel_to_birthdate;
+/
+
+-- 6. Funkcja 6: Zliczanie pracowników i departamentów w kraju
+CREATE OR REPLACE FUNCTION count_employees_departments(p_country_name IN VARCHAR2) 
+  RETURN VARCHAR2 AS
+  v_employee_count NUMBER;
+  v_department_count NUMBER;
+  v_result VARCHAR2(255);
+BEGIN
+  -- Sprawdzamy, czy kraj istnieje
+  BEGIN
+    SELECT COUNT(DISTINCT e.employee_id), COUNT(DISTINCT d.department_id)
+    INTO v_employee_count, v_department_count
+    FROM employees e
+    JOIN departments d ON e.department_id = d.department_id
+    JOIN countries c ON d.country_id = c.country_id
+    WHERE c.country_name = p_country_name;
+
+    IF v_employee_count = 0 THEN
+      RAISE_APPLICATION_ERROR(-20004, 'Brak pracowników w kraju ' || p_country_name);
+    END IF;
+
+    v_result := 'Liczba pracowników: ' || v_employee_count || ', Liczba departamentów: ' || v_department_count;
+
+    RETURN v_result;
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      RAISE_APPLICATION_ERROR(-20005, 'Nie znaleziono kraju o nazwie ' || p_country_name);
+  END;
+END count_employees_departments;
+/
+
+-- Wyzwalacze
+
+-- 1. Po usunięciu departamentu dodajemy rekord do archiwum
+CREATE OR REPLACE TRIGGER trg_after_delete_department
+AFTER DELETE ON departments
+FOR EACH ROW
+BEGIN
+  INSERT INTO archiwum_departamentów (department_id, department_name, closure_date, last_manager)
+  VALUES (:OLD.department_id, :OLD.department_name, SYSDATE, 
+          (SELECT first_name || ' ' || last_name FROM employees WHERE employee_id = :OLD.manager_id));
+END;
+/
+
+-- 2. Sprawdzanie, czy wynagrodzenie mieści się w dozwolonych widełkach
+CREATE OR REPLACE TRIGGER trg_salary_check
+BEFORE INSERT OR UPDATE ON employees
+FOR EACH ROW
+BEGIN
+  IF :NEW.salary < 2000 OR :NEW.salary > 26000 THEN
+    INSERT INTO złodziej (id, username, change_time) 
+    VALUES (:NEW.employee_id, USER, SYSDATE);
+    RAISE_APPLICATION_ERROR(-20006, 'Wynagrodzenie poza dozwolonym zakresem (2000-26000)');
+  END IF;
+END;
+/
+
+-- 3. Auto inkrementacja dla employee_id w tabeli employees
+CREATE SEQUENCE emp_seq START WITH 1 INCREMENT BY 1;
+
+CREATE OR REPLACE TRIGGER trg_auto_increment_employee_id
+BEFORE INSERT ON employees
+FOR EACH ROW
+BEGIN
+  :NEW.employee_id := emp_seq.NEXTVAL;
+END;
+/
+
+-- 4. Zablokowanie operacji na tabeli JOB_GRADES
+CREATE OR REPLACE TRIGGER trg_restrict_job_grades
+BEFORE INSERT OR UPDATE OR DELETE ON job_grades
+FOR EACH ROW
+BEGIN
+  RAISE_APPLICATION_ERROR(-20007, 'Operacje na tabeli JOB_GRADES są zabronione');
+END;
+/
+
+-- 5. Zabronienie zmiany min_salary i max_salary w tabeli jobs
+CREATE OR REPLACE TRIGGER trg_no_salary_change
+BEFORE UPDATE ON jobs
+FOR EACH ROW
+BEGIN
+  IF :NEW.max_salary != :OLD.max_salary OR :NEW.min_salary != :OLD.min_salary THEN
+    :NEW.max_salary := :OLD.max_salary;
+    :NEW.min_salary := :OLD.min_salary;
+    RAISE_APPLICATION_ERROR(-20008, 'Zmiana max_salary i min_salary jest zabroniona');
+  END IF;
+END;
+/
+
+-- Paczka 1: Paczka z funkcjami
+CREATE OR REPLACE PACKAGE emp_package AS
+  FUNCTION get_job_title(p_job_id IN VARCHAR2) RETURN VARCHAR2;
+  FUNCTION get_annual_salary(p_employee_id IN NUMBER) RETURN NUMBER;
+  FUNCTION extract_area_code(p_phone_number IN VARCHAR2) RETURN VARCHAR2;
+  FUNCTION capitalize_first_and_last(p_string IN VARCHAR2) RETURN VARCHAR2;
+  FUNCTION pesel_to_birthdate(p_pesel IN VARCHAR2) RETURN DATE;
+  FUNCTION count_employees_departments(p_country_name IN VARCHAR2) RETURN VARCHAR2;
+END emp_package;
+/
+
+CREATE OR REPLACE PACKAGE BODY emp_package AS
+  FUNCTION get_job_title(p_job_id IN VARCHAR2) RETURN VARCHAR2 AS
+    v_job_title VARCHAR2(255);
+  BEGIN
+    BEGIN
+      SELECT job_title INTO v_job_title
+      FROM jobs
+      WHERE job_id = p_job_id;
+
+      RETURN v_job_title;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        RAISE_APPLICATION_ERROR(-20001, 'Nie znaleziono pracy o podanym ID');
+    END;
+  END get_job_title;
+
+  FUNCTION get_annual_salary(p_employee_id IN NUMBER) RETURN NUMBER AS
+    v_annual_salary NUMBER;
+  BEGIN
+    SELECT (salary * 12) + (NVL(commission_pct, 0) * salary * 12) INTO v_annual_salary
+    FROM employees
+    WHERE employee_id = p_employee_id;
+
+    RETURN v_annual_salary;
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      RAISE_APPLICATION_ERROR(-20002, 'Nie znaleziono pracownika o podanym ID');
+  END get_annual_salary;
+
+  FUNCTION extract_area_code(p_phone_number IN VARCHAR2) RETURN VARCHAR2 AS
+    v_area_code VARCHAR2(10);
+  BEGIN
+    BEGIN
+      SELECT REGEXP_SUBSTR(p_phone_number, '\([0-9]+\)', 1, 1) INTO v_area_code
+      FROM dual;
+
+      -- Usuwamy nawiasy
+      v_area_code := REPLACE(v_area_code, '(', '');
+      v_area_code := REPLACE(v_area_code, ')', '');
+
+      RETURN v_area_code;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        RETURN NULL; -- Jeśli nie znaleziono kodu kierunkowego
+    END;
+  END extract_area_code;
+
+  FUNCTION capitalize_first_and_last(p_string IN VARCHAR2) RETURN VARCHAR2 AS
+    v_result VARCHAR2(255);
+  BEGIN
+    IF LENGTH(p_string) > 1 THEN
+      v_result := UPPER(SUBSTR(p_string, 1, 1)) || LOWER(SUBSTR(p_string, 2, LENGTH(p_string)-2)) || UPPER(SUBSTR(p_string, LENGTH(p_string), 1));
+    ELSE
+      v_result := UPPER(p_string); -- Jeśli tylko 1 znak
+    END IF;
+
+    RETURN v_result;
+  END capitalize_first_and_last;
+
+  FUNCTION pesel_to_birthdate(p_pesel IN VARCHAR2) RETURN DATE AS
+    v_birth_date DATE;
+  BEGIN
+    -- Zakłada, że PESEL ma format 'YYMMDD'
+    v_birth_date := TO_DATE(SUBSTR(p_pesel, 1, 6), 'YYMMDD');
+    RETURN v_birth_date;
+  EXCEPTION
+    WHEN OTHERS THEN
+      RAISE_APPLICATION_ERROR(-20003, 'Niepoprawny PESEL');
+  END pesel_to_birthdate;
+
+  FUNCTION count_employees_departments(p_country_name IN VARCHAR2) 
+    RETURN VARCHAR2 AS
+    v_employee_count NUMBER;
+    v_department_count NUMBER;
+    v_result VARCHAR2(255);
+  BEGIN
+    -- Sprawdzamy, czy kraj istnieje
+    BEGIN
+      SELECT COUNT(DISTINCT e.employee_id), COUNT(DISTINCT d.department_id)
+      INTO v_employee_count, v_department_count
+      FROM employees e
+      JOIN departments d ON e.department_id = d.department_id
+      JOIN countries c ON d.country_id = c.country_id
+      WHERE c.country_name = p_country_name;
+
+      IF v_employee_count = 0 THEN
+        RAISE_APPLICATION_ERROR(-20004, 'Brak pracowników w kraju ' || p_country_name);
+      END IF;
+
+      v_result := 'Liczba pracowników: ' || v_employee_count || ', Liczba departamentów: ' || v_department_count;
+
+      RETURN v_result;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        RAISE_APPLICATION_ERROR(-20005, 'Nie znaleziono kraju o nazwie ' || p_country_name);
+    END;
+  END count_employees_departments;
+
+END emp_package;
+/
