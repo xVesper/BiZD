@@ -1,70 +1,110 @@
-CREATE TABLE REGIONS (
-    region_id NUMBER PRIMARY KEY,
-    region_name VARCHAR2(50)
-);
+-- 1. Usuń wszystkie tabele ze swojej bazy
+BEGIN
+    FOR rec IN (SELECT table_name FROM user_tables) LOOP
+        EXECUTE IMMEDIATE 'DROP TABLE ' || rec.table_name || ' CASCADE CONSTRAINTS';
+    END LOOP;
+END;
+/
 
-CREATE TABLE COUNTRIES (
-    country_id CHAR(2) PRIMARY KEY,
-    country_name VARCHAR2(50),
-    region_id NUMBER,
-    FOREIGN KEY (region_id) REFERENCES REGIONS(region_id)
-);
+-- 2. Skopiuj wszystkie tabele z użytkownika HR
+BEGIN
+    FOR rec IN (SELECT table_name FROM all_tables WHERE owner = 'HR') LOOP
+        EXECUTE IMMEDIATE 'CREATE TABLE ' || rec.table_name || ' AS SELECT * FROM HR.' || rec.table_name;
+    END LOOP;
+END;
+/
 
-CREATE TABLE LOCATIONS (
-    location_id NUMBER PRIMARY KEY,
-    street_address VARCHAR2(100),
-    postal_code VARCHAR2(20),
-    city VARCHAR2(50) NOT NULL,
-    state_province VARCHAR2(50),
-    country_id CHAR(2),
-    FOREIGN KEY (country_id) REFERENCES COUNTRIES(country_id)
-);
+-- Ustaw klucze główne i obce
+ALTER TABLE employees ADD CONSTRAINT emp_pk PRIMARY KEY (employee_id);
+ALTER TABLE departments ADD CONSTRAINT dept_pk PRIMARY KEY (department_id);
+ALTER TABLE employees ADD CONSTRAINT emp_dept_fk FOREIGN KEY (department_id) REFERENCES departments(department_id);
 
-CREATE TABLE DEPARTMENTS (
-    department_id NUMBER PRIMARY KEY,
-    department_name VARCHAR2(50) NOT NULL,
-    manager_id NUMBER,
-    location_id NUMBER,
-    FOREIGN KEY (location_id) REFERENCES LOCATIONS(location_id)
-);
+-- 3. Zadania SQL
+-- 3.1 Wypisz nazwisko i zarobki dla osób z departamentów 20 i 50, zarobki między 2000 a 7000
+CREATE OR REPLACE VIEW wynagrodzenie_d20_d50 AS
+SELECT last_name || ' ' || salary AS wynagrodzenie
+FROM employees
+WHERE department_id IN (20, 50) AND salary BETWEEN 2000 AND 7000
+ORDER BY last_name;
 
-CREATE TABLE JOBS (
-    job_id VARCHAR2(10) PRIMARY KEY,
-    job_title VARCHAR2(50) NOT NULL,
-    min_salary NUMBER,
-    max_salary NUMBER,
-    CONSTRAINT check_salary_range CHECK (min_salary < max_salary AND min_salary >= 2000)
-);
+-- 3.2 Informacja o zatrudnieniu w 2005, dla osób mających menadżera
+CREATE OR REPLACE VIEW zatrudnienie_2005 AS
+SELECT hire_date, last_name, :column_name
+FROM employees
+WHERE manager_id IS NOT NULL AND EXTRACT(YEAR FROM hire_date) = 2005
+ORDER BY :column_name;
 
-CREATE TABLE EMPLOYEES (
-    employee_id NUMBER PRIMARY KEY,
-    first_name VARCHAR2(50),
-    last_name VARCHAR2(50) NOT NULL,
-    email VARCHAR2(100) NOT NULL,
-    phone_number VARCHAR2(20),
-    hire_date DATE NOT NULL,
-    job_id VARCHAR2(10) NOT NULL,
-    salary NUMBER,
-    commission_pct NUMBER,
-    manager_id NUMBER,
-    department_id NUMBER,
-    FOREIGN KEY (job_id) REFERENCES JOBS(job_id),
-    FOREIGN KEY (department_id) REFERENCES DEPARTMENTS(department_id)
-);
+-- 3.3 Imię i nazwisko razem, zarobki, numer telefonu, sortowanie według kolumn
+CREATE OR REPLACE VIEW pracownicy_z_telefonem AS
+SELECT first_name || ' ' || last_name AS pelne_imie, salary, phone_number
+FROM employees
+WHERE SUBSTR(last_name, 3, 1) = 'e' AND INSTR(first_name, :part_of_name) > 0
+ORDER BY pelne_imie DESC, salary ASC;
 
-CREATE TABLE JOB_HISTORY (
-    employee_id NUMBER,
-    start_date DATE NOT NULL,
-    end_date DATE NOT NULL,
-    job_id VARCHAR2(10) NOT NULL,
-    department_id NUMBER NOT NULL,
-    PRIMARY KEY (employee_id, start_date),
-    FOREIGN KEY (employee_id) REFERENCES EMPLOYEES(employee_id),
-    FOREIGN KEY (job_id) REFERENCES JOBS(job_id),
-    FOREIGN KEY (department_id) REFERENCES DEPARTMENTS(department_id)
-);
+-- 3.4 Liczba miesięcy przepracowanych + bonus
+CREATE OR REPLACE VIEW przepracowane_miesiace AS
+SELECT first_name, last_name, ROUND(MONTHS_BETWEEN(SYSDATE, hire_date)) AS liczba_miesiecy,
+       CASE
+           WHEN ROUND(MONTHS_BETWEEN(SYSDATE, hire_date)) < 150 THEN salary * 0.1
+           WHEN ROUND(MONTHS_BETWEEN(SYSDATE, hire_date)) BETWEEN 150 AND 200 THEN salary * 0.2
+           ELSE salary * 0.3
+       END AS wysokosc_dodatku
+FROM employees
+ORDER BY liczba_miesiecy;
 
--- Polecenie FLASHBACK TABLE zadziała tylko wtedy, 
--- gdy masz włączoną opcję recyklingu dla usuniętych obiektów, czyli tzw. "Recycle Bin" w Oracle. 
--- Jeśli opcja ta jest aktywna, możliwe jest przywrócenie tabeli po jej usunięciu, o ile nie została bezpowrotnie usunięta komendą DROP TABLE ... PURGE.
--- Jeśli tabela nie znajduje się w "Recycle Bin" (np. została usunięta z opcją PURGE), wtedy jej odzyskanie za pomocą polecenia FLASHBACK nie będzie możliwe.
+-- 3.5 Działy z minimalną płacą > 5000, suma i średnia zarobków
+CREATE OR REPLACE VIEW dzialy_zarobki AS
+SELECT department_id, ROUND(SUM(salary), 0) AS suma_zarobkow, ROUND(AVG(salary), 0) AS srednia_zarobkow
+FROM employees
+GROUP BY department_id
+HAVING MIN(salary) > 5000;
+
+-- 3.6 Pracownicy z Toronto
+CREATE OR REPLACE VIEW toronto_pracownicy AS
+SELECT e.last_name, e.department_id, d.department_name, e.job_id
+FROM employees e
+JOIN departments d ON e.department_id = d.department_id
+JOIN locations l ON d.location_id = l.location_id
+WHERE l.city = 'Toronto';
+
+-- 3.7 Pracownicy współpracujący z Jennifer
+CREATE OR REPLACE VIEW wspolpracownicy_jennifer AS
+SELECT e1.first_name || ' ' || e1.last_name AS pracownik,
+       e2.first_name || ' ' || e2.last_name AS wspolpracownik
+FROM employees e1
+JOIN employees e2 ON e1.department_id = e2.department_id
+WHERE e1.first_name = 'Jennifer' AND e1.employee_id != e2.employee_id;
+
+-- 3.8 Departamenty bez pracowników
+CREATE OR REPLACE VIEW puste_dzialy AS
+SELECT d.department_id, d.department_name
+FROM departments d
+LEFT JOIN employees e ON d.department_id = e.department_id
+WHERE e.employee_id IS NULL;
+
+-- 3.9 Kopiuj tabelę job_grades
+CREATE TABLE job_grades AS SELECT * FROM HR.job_grades;
+
+-- 3.10 Pracownicy z odpowiednim grade
+CREATE OR REPLACE VIEW pracownicy_grade AS
+SELECT e.first_name, e.last_name, e.job_id, d.department_name, e.salary, j.grade_level
+FROM employees e
+JOIN departments d ON e.department_id = d.department_id
+JOIN job_grades j ON e.salary BETWEEN j.lowest_sal AND j.highest_sal;
+
+-- 3.11 Pracownicy zarabiający więcej niż średnia
+CREATE OR REPLACE VIEW powyzej_sredniej AS
+SELECT first_name, last_name, salary
+FROM employees
+WHERE salary > (SELECT AVG(salary) FROM employees)
+ORDER BY salary DESC;
+
+-- 3.12 Pracownicy w departamencie z osobami mającymi "u" w nazwisku
+CREATE OR REPLACE VIEW osoby_w_dzialach_u AS
+SELECT DISTINCT e.employee_id, e.first_name, e.last_name
+FROM employees e
+WHERE e.department_id IN (
+    SELECT department_id
+    FROM employees
+    WHERE last_name LIKE '%u%'
+);
